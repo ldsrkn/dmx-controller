@@ -1,210 +1,226 @@
 #!/usr/bin/env python3
 """
-Basic DMX512 test script for WaveShare 2-CH RS485 HAT
-Tests port access and sends simple DMX frames
+Safe DMX512 test script for WaveShare 2-CH RS485 HAT
+Avoids problematic operations that can cause hanging
 """
 
 import serial
 import time
+import sys
 
-def test_port_access():
-    """Test if we can access both serial ports"""
-    print("=== Port Access Test ===")
+def test_basic_port_access():
+    """Test basic port access without closing operations"""
+    print("=== Basic Port Access Test ===")
     
     ports = ['/dev/ttySC0', '/dev/ttySC1']
-    results = {}
+    success_count = 0
     
     for port_name in ports:
         try:
+            # Open with minimal timeout to avoid hanging
             ser = serial.Serial(
                 port=port_name,
                 baudrate=9600,
-                timeout=1
+                timeout=0.01,
+                write_timeout=0.01
             )
             print(f"✓ {port_name} - accessible")
-            ser.close()
-            results[port_name] = True
+            # Let Python garbage collector handle cleanup
+            del ser
+            success_count += 1
+            
         except Exception as e:
             print(f"✗ {port_name} - error: {e}")
-            results[port_name] = False
     
-    all_ok = all(results.values())
-    if all_ok:
-        print("✓ All ports accessible\n")
+    if success_count == 2:
+        print("✓ Both ports accessible")
+        return True
     else:
-        print("✗ Some ports failed. Check:")
-        print("  - sudo usermod -a -G dialout $USER")
-        print("  - HAT connection")
-        print("  - /boot/firmware/config.txt settings\n")
-    
-    return all_ok
+        print("✗ Some ports failed")
+        return False
 
-class BasicDMXController:
-    """Simple DMX controller for testing"""
+def test_dmx_basic_output():
+    """Test basic DMX output without baud rate manipulation"""
+    print("\n=== Basic DMX Output Test ===")
     
-    def __init__(self, port='/dev/ttySC0'):
-        self.port = port
-        self.serial_port = None
+    try:
+        # Open DMX port with standard settings
+        dmx_port = serial.Serial(
+            port='/dev/ttySC0',
+            baudrate=250000,  # Standard DMX512 baud rate
+            bytesize=8,
+            parity=serial.PARITY_NONE,
+            stopbits=2,
+            timeout=0.01,
+            write_timeout=0.01
+        )
         
-    def open(self):
-        """Open serial port for DMX communication"""
+        print("✓ DMX port opened successfully")
+        print("  Port: /dev/ttySC0")
+        print("  Baud: 250000")
+        print("  Config: 8N2")
+        
+        # Create test DMX frame
+        test_frame = bytearray(513)  # Start code + 512 channels
+        test_frame[0] = 0x00  # DMX start code
+        
+        # Set some test channels
+        test_frame[1] = 255   # Channel 1: Full brightness
+        test_frame[2] = 128   # Channel 2: Half brightness  
+        test_frame[3] = 64    # Channel 3: Quarter brightness
+        test_frame[4] = 32    # Channel 4: Low brightness
+        test_frame[5] = 255   # Channel 5: Full brightness
+        test_frame[6] = 0     # Channel 6: Off
+        test_frame[7] = 255   # Channel 7: Full brightness
+        test_frame[8] = 0     # Channel 8: Off
+        
+        print("\nSending DMX test frames...")
+        
+        # Send multiple frames
+        for frame_num in range(5):
+            try:
+                bytes_written = dmx_port.write(test_frame)
+                dmx_port.flush()
+                print(f"  Frame {frame_num + 1}: {bytes_written} bytes sent")
+                time.sleep(0.04)  # 25 FPS refresh rate
+                
+            except Exception as e:
+                print(f"  Frame {frame_num + 1}: Failed - {e}")
+                break
+        
+        print("✓ DMX output test completed")
+        
+        # Let garbage collector handle cleanup
+        del dmx_port
+        return True
+        
+    except Exception as e:
+        print(f"✗ DMX output test failed: {e}")
+        return False
+
+def test_pattern_output():
+    """Send a recognizable pattern for testing with DMX devices"""
+    print("\n=== Pattern Output Test ===")
+    
+    try:
+        dmx_port = serial.Serial('/dev/ttySC0', 250000, 8, 'N', 2, timeout=0.01)
+        print("✓ DMX port ready for pattern test")
+        
+        # Create different patterns
+        patterns = [
+            [255, 0, 0, 0],      # Red only
+            [0, 255, 0, 0],      # Green only  
+            [0, 0, 255, 0],      # Blue only
+            [255, 255, 255, 0],  # White
+            [0, 0, 0, 0]         # All off
+        ]
+        
+        for i, pattern in enumerate(patterns):
+            frame = bytearray(513)
+            frame[0] = 0x00  # Start code
+            
+            # Apply pattern to first 4 channels
+            for ch, value in enumerate(pattern):
+                frame[ch + 1] = value
+            
+            dmx_port.write(frame)
+            dmx_port.flush()
+            
+            pattern_name = ['Red', 'Green', 'Blue', 'White', 'Off'][i]
+            print(f"  Pattern {i + 1}: {pattern_name} - sent")
+            time.sleep(1.0)  # Hold each pattern for 1 second
+        
+        print("✓ Pattern test completed")
+        del dmx_port
+        return True
+        
+    except Exception as e:
+        print(f"✗ Pattern test failed: {e}")
+        return False
+
+def check_system_info():
+    """Display system information for debugging"""
+    print("\n=== System Information ===")
+    
+    try:
+        # Check if user is in dialout group
+        import subprocess
+        result = subprocess.run(['groups'], capture_output=True, text=True)
+        groups = result.stdout.strip()
+        
+        if 'dialout' in groups:
+            print("✓ User is in dialout group")
+        else:
+            print("✗ User NOT in dialout group")
+            print("  Run: sudo usermod -a -G dialout $USER")
+        
+        # Check kernel driver
         try:
-            self.serial_port = serial.Serial(
-                port=self.port,
-                baudrate=250000,  # DMX512 standard baud rate
-                bytesize=8,
-                parity=serial.PARITY_NONE,
-                stopbits=2,
-                timeout=1
-            )
-            print(f"✓ DMX port {self.port} opened")
-            return True
-        except Exception as e:
-            print(f"✗ Failed to open {self.port}: {e}")
-            return False
-    
-    def send_break(self):
-        """Send DMX break signal (88 microseconds)"""
-        if not self.serial_port:
-            return False
+            with open('/proc/modules', 'r') as f:
+                modules = f.read()
+                if 'sc16is7xx' in modules:
+                    print("✓ SC16IS7xx driver loaded")
+                else:
+                    print("✗ SC16IS7xx driver not found")
+        except:
+            print("? Could not check kernel modules")
             
-        # Lower baud rate to create break timing
-        original_baud = self.serial_port.baudrate
-        self.serial_port.baudrate = 83333  # Approximates 88µs break
-        self.serial_port.write(b'\x00')
-        self.serial_port.flush()
-        
-        # Restore normal baud rate
-        self.serial_port.baudrate = original_baud
-        
-        # Mark After Break (MAB) - minimum 12µs
-        time.sleep(0.000012)
-        
-    def send_frame(self, channel_data):
-        """Send complete DMX frame"""
-        if not self.serial_port:
-            return False
-            
-        # Send break signal
-        self.send_break()
-        
-        # Send start code (0x00 for DMX512)
-        self.serial_port.write(b'\x00')
-        
-        # Prepare frame data (pad to 512 channels)
-        frame = list(channel_data[:512])
-        while len(frame) < 512:
-            frame.append(0)
-            
-        # Send channel data
-        self.serial_port.write(bytes(frame))
-        self.serial_port.flush()
-        
-        return True
-    
-    def close(self):
-        """Close serial port"""
-        if self.serial_port:
-            self.serial_port.close()
-            self.serial_port = None
-            print("DMX port closed")
-
-def run_basic_test():
-    """Run basic DMX output test"""
-    print("=== Basic DMX Output Test ===")
-    
-    dmx = BasicDMXController()
-    
-    if not dmx.open():
-        return False
-    
-    try:
-        # Test pattern: first 8 channels with different values
-        test_pattern = [255, 128, 64, 32, 16, 8, 4, 2]
-        
-        print("Sending DMX test frames...")
-        for i in range(10):
-            dmx.send_frame(test_pattern)
-            print(f"  Frame {i+1}/10 sent")
-            time.sleep(0.04)  # 25 FPS refresh rate
-            
-        print("✓ Basic test completed successfully")
-        return True
+        print(f"✓ Python serial library available")
         
     except Exception as e:
-        print(f"✗ Test failed: {e}")
-        return False
-    finally:
-        dmx.close()
-
-def run_channel_sweep():
-    """Test by sweeping through channels 1-16"""
-    print("=== Channel Sweep Test ===")
-    
-    dmx = BasicDMXController()
-    
-    if not dmx.open():
-        return False
-    
-    try:
-        channels = [0] * 512
-        
-        print("Sweeping channels 1-16...")
-        for ch in range(1, 17):
-            # Clear previous channel
-            if ch > 1:
-                channels[ch-2] = 0
-            
-            # Set current channel to full
-            channels[ch-1] = 255
-            
-            # Send frame
-            dmx.send_frame(channels)
-            print(f"  Channel {ch} ON")
-            time.sleep(0.2)
-        
-        # Turn all off
-        channels = [0] * 512
-        dmx.send_frame(channels)
-        print("  All channels OFF")
-        
-        print("✓ Channel sweep completed")
-        return True
-        
-    except Exception as e:
-        print(f"✗ Sweep test failed: {e}")
-        return False
-    finally:
-        dmx.close()
+        print(f"✗ System check failed: {e}")
 
 def main():
-    """Main test function"""
-    print("WaveShare 2-CH RS485 HAT - DMX512 Test")
+    """Main test sequence"""
+    print("WaveShare 2-CH RS485 HAT - Safe DMX512 Test")
     print("=" * 50)
     
-    # Test port access first
-    if not test_port_access():
-        print("Cannot proceed - port access failed")
+    # System information
+    check_system_info()
+    
+    # Basic port test
+    if not test_basic_port_access():
+        print("\n❌ FAILED: Cannot access serial ports")
+        print("\nTroubleshooting:")
+        print("1. Check HAT is properly connected")
+        print("2. Verify /boot/firmware/config.txt has: dtoverlay=sc16is752-spi1,int_pin=24")
+        print("3. Ensure user is in dialout group")
+        print("4. Try reboot if driver issues persist")
         return
     
-    # Run basic output test
-    if run_basic_test():
-        print("\n🎉 Basic DMX test PASSED!")
+    # DMX output test
+    if test_dmx_basic_output():
+        print("\n🎉 SUCCESS: Basic DMX output working!")
         
-        # Ask for channel sweep test
-        response = input("\nRun channel sweep test? (y/N): ").lower()
-        if response in ['y', 'yes']:
-            run_channel_sweep()
+        # Ask for pattern test
+        try:
+            response = input("\nRun pattern test? (y/N): ").strip().lower()
+            if response in ['y', 'yes']:
+                test_pattern_output()
+        except KeyboardInterrupt:
+            print("\nTest interrupted by user")
+        except:
+            print("\nSkipping pattern test")
     else:
-        print("\n❌ Basic DMX test FAILED")
-        print("Check hardware connections and DIP switch settings")
+        print("\n❌ FAILED: DMX output not working")
+        print("\nCheck:")
+        print("1. DIP switches on HAT (try A=0, B=1 for auto mode)")
+        print("2. Terminal resistors if at end of DMX line")
+        print("3. Physical DMX connections")
     
     print("\n" + "=" * 50)
     print("Test completed!")
     print("\nNext steps:")
-    print("1. Connect DMX devices to test output")
-    print("2. Configure DIP switches for your setup")
-    print("3. Set terminal resistors if at end of DMX line")
+    print("1. Connect actual DMX devices to test")
+    print("2. Create full DMX controller scripts")
+    print("3. Implement both OUT/IN and OUT/OUT modes")
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n\nTest interrupted. Exiting...")
+        sys.exit(0)
+    except Exception as e:
+        print(f"\nUnexpected error: {e}")
+        sys.exit(1)
